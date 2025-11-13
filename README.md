@@ -1,10 +1,12 @@
 # cterm - Console TUI Mail Client
 
-**cterm** - легковесный консольный почтовый клиент с текстовым интерфейсом (TUI) для Linux.
+**cterm** - легковесный почтовый клиент для Linux с двумя интерфейсами: текстовым (TUI) и графическим (GUI).
 
 ## Особенности
 
-- Работает в терминале (ncurses TUI)
+- **Два варианта интерфейса:**
+  - `cterm` - терминальный интерфейс (ncurses TUI)
+  - `cterm-gui` - графический интерфейс (GTK+3 GUI)
 - Поддержка IMAP для получения писем
 - Поддержка SMTP для отправки писем
 - SSL/TLS шифрование (OpenSSL)
@@ -15,41 +17,69 @@
 
 ### Библиотеки
 
+**Для TUI версии (cterm):**
 - libc (стандартная библиотека C)
 - ncurses (для TUI интерфейса)
 - OpenSSL (для SSL/TLS поддержки)
+
+**Для GUI версии (cterm-gui):**
+- Все библиотеки из TUI версии
+- GTK+3 (для графического интерфейса)
 
 ### Установка зависимостей
 
 **Debian/Ubuntu:**
 ```bash
+# Для TUI версии
 sudo apt-get install build-essential libncurses-dev libssl-dev
+
+# Дополнительно для GUI версии
+sudo apt-get install libgtk-3-dev
 ```
 
 **Fedora/RHEL:**
 ```bash
+# Для TUI версии
 sudo dnf install gcc make ncurses-devel openssl-devel
+
+# Дополнительно для GUI версии
+sudo dnf install gtk3-devel
 ```
 
 **Arch Linux:**
 ```bash
+# Для TUI версии
 sudo pacman -S base-devel ncurses openssl
+
+# Дополнительно для GUI версии
+sudo pacman -S gtk3
 ```
 
 ## Сборка
 
 ### Вариант 1: Using Makefile (рекомендуется)
 
+**Собрать обе версии (TUI и GUI):**
 ```bash
 make
 ```
 
-Для debug сборки:
+**Собрать только TUI версию:**
+```bash
+make tui
+```
+
+**Собрать только GUI версию:**
+```bash
+make gui
+```
+
+**Debug сборка:**
 ```bash
 make debug
 ```
 
-Для release сборки:
+**Release сборка:**
 ```bash
 make release
 ```
@@ -112,6 +142,8 @@ smtp_use_starttls = yes
 
 ## Использование
 
+### TUI версия (терминальный интерфейс)
+
 Запустите программу:
 ```bash
 cterm
@@ -121,6 +153,26 @@ cterm
 ```bash
 cterm -c /path/to/config.conf
 ```
+
+### GUI версия (графический интерфейс)
+
+Запустите программу:
+```bash
+cterm-gui
+```
+
+Или укажите альтернативный конфиг:
+```bash
+cterm-gui -c /path/to/config.conf
+```
+
+**Особенности GUI версии:**
+- Графическое окно с интуитивным интерфейсом
+- Список писем в виде таблицы
+- Панель предпросмотра письма
+- Диалог композиции письма
+- Кнопки управления: Refresh, Compose, Delete
+- Строка состояния для отображения операций
 
 ### Горячие клавиши
 
@@ -147,12 +199,14 @@ cterm -c /path/to/config.conf
 ```
 cterm/
 ├── src/              # Исходные файлы
-│   ├── main.c        # Точка входа
+│   ├── main.c        # Точка входа TUI
+│   ├── main_gui.c    # Точка входа GUI
 │   ├── config.c      # Парсинг конфигурации
 │   ├── network.c     # Сетевые соединения + SSL/TLS
 │   ├── imap.c        # IMAP протокол
 │   ├── smtp.c        # SMTP протокол
-│   └── ui.c          # ncurses TUI
+│   ├── ui.c          # ncurses TUI
+│   └── gui.c         # GTK+3 GUI
 ├── include/          # Заголовочные файлы
 ├── config/           # Примеры конфигурации
 └── docs/             # Документация
@@ -160,6 +214,7 @@ cterm/
 
 ### Взаимодействие модулей
 
+**TUI версия:**
 ```
 main.c
   ├─> config.c      (загрузка настроек)
@@ -168,7 +223,21 @@ main.c
   │     └─> network.c
   ├─> smtp.c        (отправка писем)
   │     └─> network.c
-  └─> ui.c          (TUI интерфейс)
+  └─> ui.c          (ncurses TUI интерфейс)
+        ├─> imap.c
+        └─> smtp.c
+```
+
+**GUI версия:**
+```
+main_gui.c
+  ├─> config.c      (загрузка настроек)
+  ├─> network.c     (TCP + SSL/TLS соединения)
+  ├─> imap.c        (получение писем)
+  │     └─> network.c
+  ├─> smtp.c        (отправка писем)
+  │     └─> network.c
+  └─> gui.c         (GTK+3 GUI интерфейс)
         ├─> imap.c
         └─> smtp.c
 ```
