@@ -226,7 +226,7 @@ int imap_fetch_emails(ImapSession *session) {
 int imap_fetch_email_body(ImapSession *session, unsigned int uid, Email *email) {
     char command[256];
     char response[BUFFER_SIZE * 2];
-    char *body_start;
+    char *body_start, *body_end;
 
     snprintf(command, sizeof(command),
              "A%d UID FETCH %u BODY[TEXT]",
@@ -236,18 +236,45 @@ int imap_fetch_email_body(ImapSession *session, unsigned int uid, Email *email) 
         return -1;
     }
 
-    /* Find body start */
-    body_start = strstr(response, "\r\n\r\n");
+    /* Find body start - look for the opening brace and skip IMAP protocol data */
+    body_start = strstr(response, "BODY[TEXT] {");
     if (body_start) {
-        body_start += 4;
+        /* Skip to after the {size} and the following \r\n */
+        body_start = strchr(body_start, '\n');
+        if (body_start) {
+            body_start++; /* Skip the \n */
+        }
+    } else {
+        /* Try alternative format */
+        body_start = strstr(response, "\r\n\r\n");
+        if (body_start) {
+            body_start += 4;
+        }
+    }
+
+    if (body_start) {
         strncpy(email->body, body_start, MAX_BODY_LEN - 1);
         email->body[MAX_BODY_LEN - 1] = '\0';
 
-        /* Remove trailing ) */
-        char *end = strrchr(email->body, ')');
-        if (end && end > email->body) {
-            *end = '\0';
+        /* Remove trailing IMAP protocol markers */
+        /* Remove trailing )\r\n or ) */
+        body_end = email->body + strlen(email->body) - 1;
+        while (body_end > email->body && (*body_end == ')' || *body_end == '\r' || *body_end == '\n' || *body_end == ' ')) {
+            *body_end = '\0';
+            body_end--;
         }
+
+        /* Remove any leading whitespace */
+        char *start = email->body;
+        while (*start == ' ' || *start == '\t' || *start == '\r' || *start == '\n') {
+            start++;
+        }
+        if (start != email->body) {
+            memmove(email->body, start, strlen(start) + 1);
+        }
+    } else {
+        /* No body found */
+        strcpy(email->body, "(Empty message)");
     }
 
     return 0;

@@ -22,6 +22,19 @@ int ui_init(UIContext *ctx, ImapSession *imap, SmtpSession *smtp, Config *cfg) {
     keypad(stdscr, TRUE);
     curs_set(0);
 
+    /* Initialize colors */
+    if (has_colors()) {
+        start_color();
+        use_default_colors();
+        init_pair(1, COLOR_CYAN, -1);      /* Headers */
+        init_pair(2, COLOR_GREEN, -1);     /* Status OK */
+        init_pair(3, COLOR_YELLOW, -1);    /* Unread marker */
+        init_pair(4, COLOR_RED, -1);       /* Errors */
+        init_pair(5, COLOR_BLUE, -1);      /* Borders */
+        init_pair(6, COLOR_MAGENTA, -1);   /* Highlights */
+        init_pair(7, COLOR_WHITE, COLOR_BLUE); /* Selected item */
+    }
+
     /* Create windows */
     int max_y, max_x;
     getmaxyx(stdscr, max_y, max_x);
@@ -56,7 +69,11 @@ void ui_cleanup(UIContext *ctx) {
 /* Draw status bar */
 void ui_draw_status(UIContext *ctx, const char *message) {
     werase(ctx->status_win);
+
+    /* Color border */
+    wattron(ctx->status_win, COLOR_PAIR(5));
     box(ctx->status_win, 0, 0);
+    wattroff(ctx->status_win, COLOR_PAIR(5));
 
     /* Show current view and controls */
     const char *view_name = "";
@@ -64,25 +81,33 @@ void ui_draw_status(UIContext *ctx, const char *message) {
 
     switch (ctx->current_view) {
         case VIEW_EMAIL_LIST:
-            view_name = "Email List";
+            view_name = "📧 Email List";
             controls = "[Enter]Open [C]Compose [D]Delete [R]Refresh [Q]Quit";
             break;
         case VIEW_EMAIL_CONTENT:
-            view_name = "Email Content";
+            view_name = "📖 Email Content";
             controls = "[Esc]Back [D]Delete [M]Mark Unseen";
             break;
         case VIEW_COMPOSE:
-            view_name = "Compose Email";
-            controls = "[Esc]Cancel";
+            view_name = "✉️  Compose Email";
+            controls = "[F2]Send [Esc]Cancel";
             break;
     }
 
+    wattron(ctx->status_win, COLOR_PAIR(1) | A_BOLD);
     mvwprintw(ctx->status_win, 0, 2, "[ %s ]", view_name);
+    wattroff(ctx->status_win, COLOR_PAIR(1) | A_BOLD);
+
+    wattron(ctx->status_win, COLOR_PAIR(6));
     mvwprintw(ctx->status_win, 1, 2, "%s", controls);
+    wattroff(ctx->status_win, COLOR_PAIR(6));
 
     if (message && strlen(message) > 0) {
         int max_x = getmaxx(ctx->status_win);
+        int msg_color = (strstr(message, "Failed") || strstr(message, "Error")) ? 4 : 2;
+        wattron(ctx->status_win, COLOR_PAIR(msg_color) | A_BOLD);
         mvwprintw(ctx->status_win, 0, max_x - strlen(message) - 3, " %s ", message);
+        wattroff(ctx->status_win, COLOR_PAIR(msg_color) | A_BOLD);
     }
 
     wrefresh(ctx->status_win);
@@ -91,23 +116,36 @@ void ui_draw_status(UIContext *ctx, const char *message) {
 /* Draw email list view */
 void ui_draw_email_list(UIContext *ctx) {
     werase(ctx->main_win);
+
+    /* Color border */
+    wattron(ctx->main_win, COLOR_PAIR(5));
     box(ctx->main_win, 0, 0);
+    wattroff(ctx->main_win, COLOR_PAIR(5));
 
     int max_y = getmaxy(ctx->main_win);
     int max_x = getmaxx(ctx->main_win);
     int email_count = ctx->imap_session->email_count;
 
     /* Header */
-    mvwprintw(ctx->main_win, 1, 2, "INBOX - %d messages", email_count);
+    wattron(ctx->main_win, COLOR_PAIR(1) | A_BOLD);
+    mvwprintw(ctx->main_win, 1, 2, "📬 INBOX - %d messages", email_count);
+    wattroff(ctx->main_win, COLOR_PAIR(1) | A_BOLD);
+
+    /* Draw separator line */
+    wattron(ctx->main_win, COLOR_PAIR(5));
+    mvwhline(ctx->main_win, 2, 1, ACS_HLINE, max_x - 2);
+    wattroff(ctx->main_win, COLOR_PAIR(5));
 
     if (email_count == 0) {
-        mvwprintw(ctx->main_win, 3, 2, "No emails");
+        wattron(ctx->main_win, COLOR_PAIR(3));
+        mvwprintw(ctx->main_win, 4, 2, "No emails in inbox");
+        wattroff(ctx->main_win, COLOR_PAIR(3));
         wrefresh(ctx->main_win);
         return;
     }
 
     /* Adjust scroll offset if needed */
-    int visible_lines = max_y - 5;
+    int visible_lines = max_y - 6;
     if (ctx->selected_index < ctx->scroll_offset) {
         ctx->scroll_offset = ctx->selected_index;
     }
@@ -122,27 +160,51 @@ void ui_draw_email_list(UIContext *ctx) {
 
         /* Highlight selected */
         if (i == ctx->selected_index) {
-            wattron(ctx->main_win, A_REVERSE);
+            wattron(ctx->main_win, COLOR_PAIR(7) | A_BOLD);
         }
 
         /* Format: [*] From: Subject */
-        char status = email->seen ? ' ' : '*';
+        char status_icon[8];
+        if (email->seen) {
+            strcpy(status_icon, " ");
+        } else {
+            strcpy(status_icon, "●");
+        }
+
         char line[512];
-        snprintf(line, sizeof(line), "[%c] %-30.30s | %.60s",
-                status, email->from, email->subject);
+        int from_len = max_x > 100 ? 30 : 20;
+        int subject_len = max_x - from_len - 15;
+        snprintf(line, sizeof(line), " %s %-*.*s │ %.*s",
+                status_icon, from_len, from_len, email->from, subject_len, email->subject);
 
         /* Truncate if too long */
         if ((int)strlen(line) > max_x - 4) {
             line[max_x - 4] = '\0';
         }
 
+        /* Color unread emails differently */
+        if (!email->seen && i != ctx->selected_index) {
+            wattron(ctx->main_win, COLOR_PAIR(3) | A_BOLD);
+        }
+
         mvwprintw(ctx->main_win, y, 2, "%s", line);
 
+        if (!email->seen && i != ctx->selected_index) {
+            wattroff(ctx->main_win, COLOR_PAIR(3) | A_BOLD);
+        }
+
         if (i == ctx->selected_index) {
-            wattroff(ctx->main_win, A_REVERSE);
+            wattroff(ctx->main_win, COLOR_PAIR(7) | A_BOLD);
         }
 
         y++;
+    }
+
+    /* Show scroll indicator */
+    if (email_count > visible_lines) {
+        wattron(ctx->main_win, COLOR_PAIR(5));
+        mvwprintw(ctx->main_win, max_y - 1, max_x - 20, "[%d/%d]", ctx->selected_index + 1, email_count);
+        wattroff(ctx->main_win, COLOR_PAIR(5));
     }
 
     wrefresh(ctx->main_win);
@@ -151,7 +213,11 @@ void ui_draw_email_list(UIContext *ctx) {
 /* Draw email content view */
 void ui_draw_email_content(UIContext *ctx) {
     werase(ctx->main_win);
+
+    /* Color border */
+    wattron(ctx->main_win, COLOR_PAIR(5));
     box(ctx->main_win, 0, 0);
+    wattroff(ctx->main_win, COLOR_PAIR(5));
 
     int max_y = getmaxy(ctx->main_win);
     int max_x = getmaxx(ctx->main_win);
@@ -164,25 +230,53 @@ void ui_draw_email_content(UIContext *ctx) {
     Email *email = &ctx->imap_session->emails[ctx->selected_index];
 
     /* Headers */
-    mvwprintw(ctx->main_win, 1, 2, "From: %s", email->from);
-    mvwprintw(ctx->main_win, 2, 2, "Subject: %s", email->subject);
-    mvwprintw(ctx->main_win, 3, 2, "Date: %s", email->date);
+    wattron(ctx->main_win, COLOR_PAIR(1) | A_BOLD);
+    mvwprintw(ctx->main_win, 1, 2, "From: ");
+    wattroff(ctx->main_win, COLOR_PAIR(1) | A_BOLD);
+    wprintw(ctx->main_win, "%s", email->from);
+
+    wattron(ctx->main_win, COLOR_PAIR(1) | A_BOLD);
+    mvwprintw(ctx->main_win, 2, 2, "Subject: ");
+    wattroff(ctx->main_win, COLOR_PAIR(1) | A_BOLD);
+    wprintw(ctx->main_win, "%s", email->subject);
+
+    wattron(ctx->main_win, COLOR_PAIR(1) | A_BOLD);
+    mvwprintw(ctx->main_win, 3, 2, "Date: ");
+    wattroff(ctx->main_win, COLOR_PAIR(1) | A_BOLD);
+    wprintw(ctx->main_win, "%s", email->date);
 
     /* Separator */
+    wattron(ctx->main_win, COLOR_PAIR(5));
     mvwhline(ctx->main_win, 4, 1, ACS_HLINE, max_x - 2);
+    wattroff(ctx->main_win, COLOR_PAIR(5));
 
-    /* Body */
+    /* Body - CRITICAL FIX: Use a copy of the body to avoid corrupting original with strtok */
     int y = 5;
-    char *line = strtok(email->body, "\n");
+    char body_copy[MAX_BODY_LEN];
+    strncpy(body_copy, email->body, MAX_BODY_LEN - 1);
+    body_copy[MAX_BODY_LEN - 1] = '\0';
+
+    char *line = strtok(body_copy, "\n");
     while (line && y < max_y - 1) {
         /* Word wrap simple implementation */
         int len = strlen(line);
         if (len > max_x - 4) {
-            line[max_x - 4] = '\0';
+            char temp[2048];
+            strncpy(temp, line, max_x - 7);
+            temp[max_x - 7] = '\0';
+            mvwprintw(ctx->main_win, y, 2, "%s...", temp);
+        } else {
+            mvwprintw(ctx->main_win, y, 2, "%s", line);
         }
-        mvwprintw(ctx->main_win, y, 2, "%s", line);
         y++;
         line = strtok(NULL, "\n");
+    }
+
+    /* Show if there's more content */
+    if (line != NULL || y >= max_y - 1) {
+        wattron(ctx->main_win, COLOR_PAIR(3));
+        mvwprintw(ctx->main_win, max_y - 1, max_x - 20, "[More content...]");
+        wattroff(ctx->main_win, COLOR_PAIR(3));
     }
 
     wrefresh(ctx->main_win);
@@ -191,15 +285,35 @@ void ui_draw_email_content(UIContext *ctx) {
 /* Draw compose email view */
 void ui_draw_compose(UIContext *ctx) {
     werase(ctx->main_win);
+
+    /* Color border */
+    wattron(ctx->main_win, COLOR_PAIR(5));
     box(ctx->main_win, 0, 0);
+    wattroff(ctx->main_win, COLOR_PAIR(5));
 
     int max_y = getmaxy(ctx->main_win);
-    (void)getmaxx(ctx->main_win); /* unused for now */
+    int max_x = getmaxx(ctx->main_win);
 
-    mvwprintw(ctx->main_win, 1, 2, "Compose New Email");
+    /* Header */
+    wattron(ctx->main_win, COLOR_PAIR(1) | A_BOLD);
+    mvwprintw(ctx->main_win, 1, 2, "✉️  Compose New Email");
+    wattroff(ctx->main_win, COLOR_PAIR(1) | A_BOLD);
+
+    /* Separator */
+    wattron(ctx->main_win, COLOR_PAIR(5));
+    mvwhline(ctx->main_win, 2, 1, ACS_HLINE, max_x - 2);
+    wattroff(ctx->main_win, COLOR_PAIR(5));
+
+    /* Labels */
+    wattron(ctx->main_win, COLOR_PAIR(1) | A_BOLD);
     mvwprintw(ctx->main_win, 3, 2, "To: ");
     mvwprintw(ctx->main_win, 4, 2, "Subject: ");
-    mvwprintw(ctx->main_win, 5, 2, "Body (type message, press F2 to send):");
+    mvwprintw(ctx->main_win, 6, 2, "Body:");
+    wattroff(ctx->main_win, COLOR_PAIR(1) | A_BOLD);
+
+    wattron(ctx->main_win, COLOR_PAIR(6));
+    mvwprintw(ctx->main_win, 5, 2, "(Press F2 to send, Esc to cancel)");
+    wattroff(ctx->main_win, COLOR_PAIR(6));
 
     /* Input fields */
     char to[INPUT_SIZE] = "";
@@ -210,15 +324,21 @@ void ui_draw_compose(UIContext *ctx) {
     curs_set(1);
 
     /* Get To */
+    wattron(ctx->main_win, COLOR_PAIR(2));
     mvwgetnstr(ctx->main_win, 3, 6, to, INPUT_SIZE - 1);
+    wattroff(ctx->main_win, COLOR_PAIR(2));
 
     /* Get Subject */
+    wattron(ctx->main_win, COLOR_PAIR(2));
     mvwgetnstr(ctx->main_win, 4, 11, subject, INPUT_SIZE - 1);
+    wattroff(ctx->main_win, COLOR_PAIR(2));
 
     /* Get Body (simple multiline) */
-    int body_y = 6;
+    int body_y = 7;
     int body_len = 0;
-    mvwprintw(ctx->main_win, body_y, 2, "> ");
+    wattron(ctx->main_win, COLOR_PAIR(6));
+    mvwprintw(ctx->main_win, body_y, 2, "│ ");
+    wattroff(ctx->main_win, COLOR_PAIR(6));
     wrefresh(ctx->main_win);
 
     int ch;
@@ -236,7 +356,9 @@ void ui_draw_compose(UIContext *ctx) {
             body[body_len++] = '\n';
             body_y++;
             if (body_y < max_y - 2) {
-                mvwprintw(ctx->main_win, body_y, 2, "> ");
+                wattron(ctx->main_win, COLOR_PAIR(6));
+                mvwprintw(ctx->main_win, body_y, 2, "│ ");
+                wattroff(ctx->main_win, COLOR_PAIR(6));
                 wrefresh(ctx->main_win);
             }
         } else if (ch >= 32 && ch < 127) {
@@ -256,12 +378,12 @@ void ui_draw_compose(UIContext *ctx) {
     if (strlen(to) > 0 && strlen(subject) > 0) {
         if (smtp_send_email(ctx->smtp_session, ctx->config->email_address,
                            to, subject, body) == 0) {
-            ui_draw_status(ctx, "Email sent successfully!");
+            ui_draw_status(ctx, "✓ Email sent successfully!");
         } else {
-            ui_draw_status(ctx, "Failed to send email");
+            ui_draw_status(ctx, "✗ Failed to send email");
         }
     } else {
-        ui_draw_status(ctx, "Invalid email (missing To or Subject)");
+        ui_draw_status(ctx, "✗ Invalid email (missing To or Subject)");
     }
 
     /* Wait for key press */
