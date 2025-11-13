@@ -1,0 +1,30 @@
+# Compiled binaries
+cterm
+*.o
+*.out
+*.exe
+
+# Build directories
+obj/
+build/
+bin/
+
+# Configuration files (user-specific)
+.cterm.conf
+
+# Debug files
+*.dSYM/
+*.su
+*.idb
+*.pdb
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
