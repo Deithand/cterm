@@ -20,7 +20,6 @@ static void on_email_selected(GtkTreeView *tree_view, gpointer user_data);
 static void on_refresh_clicked(GtkButton *button, gpointer user_data);
 static void on_compose_clicked(GtkButton *button, gpointer user_data);
 static void on_delete_clicked(GtkButton *button, gpointer user_data);
-static void on_send_email_clicked(GtkButton *button, gpointer user_data);
 static void on_window_destroy(GtkWidget *widget, gpointer user_data);
 
 /* Initialize GUI */
@@ -160,11 +159,13 @@ int gui_init(GUIContext *ctx, ImapSession *imap, SmtpSession *smtp, Config *conf
 
 /* Run main GUI loop */
 void gui_run(GUIContext *ctx) {
+    (void)ctx; /* Unused */
     gtk_main();
 }
 
 /* Cleanup GUI resources */
 void gui_cleanup(GUIContext *ctx) {
+    (void)ctx; /* Unused */
     /* GTK cleanup is handled by destroy signal */
 }
 
@@ -188,7 +189,7 @@ void gui_refresh_emails(GUIContext *ctx) {
     }
 
     /* Add emails to list */
-    for (int i = 0; i < imap->email_count && i < MAX_EMAILS; i++) {
+    for (int i = 0; i < imap->email_count; i++) {
         gtk_list_store_append(store, &iter);
         gtk_list_store_set(store, &iter,
                           COL_INDEX, i + 1,
@@ -223,8 +224,8 @@ static void on_email_selected(GtkTreeView *tree_view, gpointer user_data) {
             /* Build email display text */
             char email_text[8192];
             snprintf(email_text, sizeof(email_text),
-                    "From: %s\nTo: %s\nDate: %s\nSubject: %s\n\n%s",
-                    email->from, email->to, email->date, email->subject, email->body);
+                    "From: %s\nDate: %s\nSubject: %s\n\n%s",
+                    email->from, email->date, email->subject, email->body);
 
             GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(ctx->text_view));
             gtk_text_buffer_set_text(buffer, email_text, -1);
@@ -234,12 +235,14 @@ static void on_email_selected(GtkTreeView *tree_view, gpointer user_data) {
 
 /* Refresh button clicked */
 static void on_refresh_clicked(GtkButton *button, gpointer user_data) {
+    (void)button; /* Unused */
     GUIContext *ctx = (GUIContext *)user_data;
     gui_refresh_emails(ctx);
 }
 
 /* Compose button clicked */
 static void on_compose_clicked(GtkButton *button, gpointer user_data) {
+    (void)button; /* Unused */
     GUIContext *ctx = (GUIContext *)user_data;
     GtkWidget *dialog;
     GtkWidget *content_area;
@@ -321,7 +324,7 @@ static void on_compose_clicked(GtkButton *button, gpointer user_data) {
         /* Send email */
         gtk_statusbar_push(GTK_STATUSBAR(ctx->status_bar), 0, "Sending email...");
 
-        if (smtp_send_email(ctx->smtp, ctx->config->smtp_from, to, subject, body) == 0) {
+        if (smtp_send_email(ctx->smtp, ctx->config->email_address, to, subject, body) == 0) {
             gtk_statusbar_push(GTK_STATUSBAR(ctx->status_bar), 0, "Email sent successfully");
         } else {
             gtk_statusbar_push(GTK_STATUSBAR(ctx->status_bar), 0, "Failed to send email");
@@ -335,6 +338,7 @@ static void on_compose_clicked(GtkButton *button, gpointer user_data) {
 
 /* Delete button clicked */
 static void on_delete_clicked(GtkButton *button, gpointer user_data) {
+    (void)button; /* Unused */
     GUIContext *ctx = (GUIContext *)user_data;
 
     if (ctx->selected_email_index < 0) {
@@ -365,5 +369,7 @@ static void on_delete_clicked(GtkButton *button, gpointer user_data) {
 
 /* Window destroy callback */
 static void on_window_destroy(GtkWidget *widget, gpointer user_data) {
+    (void)widget;    /* Unused */
+    (void)user_data; /* Unused */
     gtk_main_quit();
 }
