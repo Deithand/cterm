@@ -59,6 +59,71 @@ static int base64_decode(const char *input, int input_len, char *output, int out
     return j;
 }
 
+/* Sanitize text - remove or replace unprintable control characters */
+static void sanitize_text(char *text) {
+    if (!text) return;
+
+    char *src = text;
+    char *dst = text;
+
+    while (*src) {
+        unsigned char c = (unsigned char)*src;
+
+        /* Check if this is a UTF-8 multi-byte sequence */
+        if ((c & 0x80) == 0x00) {
+            /* ASCII character */
+            if (c >= 32 && c <= 126) {
+                /* Printable ASCII */
+                *dst++ = *src++;
+            } else if (c == '\n' || c == '\r' || c == '\t') {
+                /* Keep newlines, returns, and tabs */
+                *dst++ = *src++;
+            } else {
+                /* Replace other control characters with space */
+                *dst++ = ' ';
+                src++;
+            }
+        } else if ((c & 0xE0) == 0xC0) {
+            /* 2-byte UTF-8 sequence */
+            if (src[1] && (src[1] & 0xC0) == 0x80) {
+                *dst++ = *src++;
+                *dst++ = *src++;
+            } else {
+                /* Invalid UTF-8, skip */
+                src++;
+            }
+        } else if ((c & 0xF0) == 0xE0) {
+            /* 3-byte UTF-8 sequence */
+            if (src[1] && src[2] &&
+                (src[1] & 0xC0) == 0x80 && (src[2] & 0xC0) == 0x80) {
+                *dst++ = *src++;
+                *dst++ = *src++;
+                *dst++ = *src++;
+            } else {
+                /* Invalid UTF-8, skip */
+                src++;
+            }
+        } else if ((c & 0xF8) == 0xF0) {
+            /* 4-byte UTF-8 sequence */
+            if (src[1] && src[2] && src[3] &&
+                (src[1] & 0xC0) == 0x80 && (src[2] & 0xC0) == 0x80 && (src[3] & 0xC0) == 0x80) {
+                *dst++ = *src++;
+                *dst++ = *src++;
+                *dst++ = *src++;
+                *dst++ = *src++;
+            } else {
+                /* Invalid UTF-8, skip */
+                src++;
+            }
+        } else {
+            /* Invalid UTF-8 start byte, skip */
+            src++;
+        }
+    }
+
+    *dst = '\0';
+}
+
 /* Decode MIME encoded-words (RFC 2047) - format: =?charset?encoding?encoded-text?= */
 static void decode_mime_header(const char *input, char *output, int output_size) {
     const char *p = input;
@@ -79,6 +144,14 @@ static void decode_mime_header(const char *input, char *output, int output_size)
                 out_len++;
                 p = start;
                 continue;
+            }
+
+            /* Extract charset (for future use) */
+            int charset_len = charset_end - p;
+            char charset[64] = {0};
+            if (charset_len < (int)sizeof(charset)) {
+                strncpy(charset, p, charset_len);
+                charset[charset_len] = '\0';
             }
 
             /* Get encoding type */
@@ -116,31 +189,40 @@ static void decode_mime_header(const char *input, char *output, int output_size)
             /* Decode the encoded text */
             int encoded_len = encoded_end - p;
             char temp_buf[1024];
+            int decoded_len = 0;
 
             if (encoding == 'B') {
                 /* Base64 decode */
-                int decoded_len = base64_decode(p, encoded_len, temp_buf, sizeof(temp_buf));
-                if (decoded_len > 0 && out_len + decoded_len < output_size - 1) {
-                    memcpy(out, temp_buf, decoded_len);
-                    out += decoded_len;
-                    out_len += decoded_len;
-                }
+                decoded_len = base64_decode(p, encoded_len, temp_buf, sizeof(temp_buf));
             } else if (encoding == 'Q') {
                 /* Quoted-printable decode (simplified) */
-                for (int i = 0; i < encoded_len && out_len < output_size - 1; i++) {
+                int temp_pos = 0;
+                for (int i = 0; i < encoded_len && temp_pos < (int)sizeof(temp_buf) - 1; i++) {
                     if (p[i] == '_') {
-                        *out++ = ' ';
-                        out_len++;
+                        temp_buf[temp_pos++] = ' ';
                     } else if (p[i] == '=' && i + 2 < encoded_len) {
                         /* Decode hex */
                         char hex[3] = {p[i+1], p[i+2], 0};
-                        *out++ = (char)strtol(hex, NULL, 16);
-                        out_len++;
+                        unsigned char decoded = (unsigned char)strtol(hex, NULL, 16);
+                        temp_buf[temp_pos++] = decoded;
                         i += 2;
                     } else {
-                        *out++ = p[i];
-                        out_len++;
+                        temp_buf[temp_pos++] = p[i];
                     }
+                }
+                temp_buf[temp_pos] = '\0';
+                decoded_len = temp_pos;
+            }
+
+            /* Sanitize and copy decoded text */
+            if (decoded_len > 0) {
+                temp_buf[decoded_len] = '\0';
+                sanitize_text(temp_buf);
+                int sanitized_len = strlen(temp_buf);
+                if (out_len + sanitized_len < output_size - 1) {
+                    memcpy(out, temp_buf, sanitized_len);
+                    out += sanitized_len;
+                    out_len += sanitized_len;
                 }
             }
 
@@ -166,13 +248,24 @@ static void decode_mime_header(const char *input, char *output, int output_size)
                 break;
             }
         } else {
-            /* Regular character */
-            *out++ = *p++;
-            out_len++;
+            /* Regular character - sanitize it too */
+            unsigned char c = (unsigned char)*p;
+            if ((c >= 32 && c <= 126) || c == '\n' || c == '\r' || c == '\t' || c >= 0x80) {
+                *out++ = *p;
+                out_len++;
+            } else {
+                /* Replace control characters with space */
+                *out++ = ' ';
+                out_len++;
+            }
+            p++;
         }
     }
 
     *out = '\0';
+
+    /* Final sanitization pass */
+    sanitize_text(output);
 }
 
 /* Send IMAP command and get response */
@@ -461,6 +554,14 @@ int imap_fetch_email_body(ImapSession *session, unsigned int uid, Email *email) 
         }
         if (start != email->body) {
             memmove(email->body, start, strlen(start) + 1);
+        }
+
+        /* Sanitize the body text */
+        sanitize_text(email->body);
+
+        /* If body is empty after sanitization, mark it */
+        if (strlen(email->body) == 0) {
+            strcpy(email->body, "(Empty message)");
         }
     } else {
         /* No body found */
