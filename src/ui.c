@@ -14,6 +14,9 @@ int ui_init(UIContext *ctx, ImapSession *imap, SmtpSession *smtp, Config *cfg) {
     ctx->selected_index = 0;
     ctx->scroll_offset = 0;
     ctx->running = 1;
+    ctx->last_tapped_index = -1;
+    ctx->last_tap_time.tv_sec = 0;
+    ctx->last_tap_time.tv_usec = 0;
 
     /* Initialize ncurses */
     initscr();
@@ -82,7 +85,7 @@ void ui_draw_status(UIContext *ctx, const char *message) {
     switch (ctx->current_view) {
         case VIEW_EMAIL_LIST:
             view_name = "📧 Email List";
-            controls = "[Enter]Open [C]Compose [D]Delete [R]Refresh [Q]Quit";
+            controls = "[2xEnter]Open [C]Compose [D]Delete [R]Refresh [Q]Quit";
             break;
         case VIEW_EMAIL_CONTENT:
             view_name = "📖 Email Content";
@@ -413,16 +416,36 @@ void ui_handle_input(UIContext *ctx, int ch) {
 
                 case '\n':
                 case KEY_ENTER:
-                    /* Open email */
+                    /* Double-tap to open email */
                     if (ctx->selected_index >= 0 && ctx->selected_index < ctx->imap_session->email_count) {
-                        Email *email = &ctx->imap_session->emails[ctx->selected_index];
-                        ui_draw_status(ctx, "Loading email...");
-                        if (imap_fetch_email_body(ctx->imap_session, email->uid, email) == 0) {
-                            imap_mark_seen(ctx->imap_session, email->uid);
-                            email->seen = 1;
-                            ctx->current_view = VIEW_EMAIL_CONTENT;
+                        struct timeval current_time;
+                        gettimeofday(&current_time, NULL);
+
+                        /* Calculate time difference in milliseconds */
+                        long diff_ms = (current_time.tv_sec - ctx->last_tap_time.tv_sec) * 1000 +
+                                      (current_time.tv_usec - ctx->last_tap_time.tv_usec) / 1000;
+
+                        /* Check if it's a double-tap (same email, within 500ms) */
+                        if (ctx->last_tapped_index == ctx->selected_index && diff_ms < 500 && diff_ms >= 0) {
+                            /* Double-tap detected - open email */
+                            Email *email = &ctx->imap_session->emails[ctx->selected_index];
+                            ui_draw_status(ctx, "Loading email...");
+                            if (imap_fetch_email_body(ctx->imap_session, email->uid, email) == 0) {
+                                imap_mark_seen(ctx->imap_session, email->uid);
+                                email->seen = 1;
+                                ctx->current_view = VIEW_EMAIL_CONTENT;
+                            } else {
+                                ui_draw_status(ctx, "Failed to load email");
+                            }
+                            /* Reset double-tap state */
+                            ctx->last_tapped_index = -1;
+                            ctx->last_tap_time.tv_sec = 0;
+                            ctx->last_tap_time.tv_usec = 0;
                         } else {
-                            ui_draw_status(ctx, "Failed to load email");
+                            /* First tap - just record it */
+                            ctx->last_tapped_index = ctx->selected_index;
+                            ctx->last_tap_time = current_time;
+                            ui_draw_status(ctx, "Tap again to open");
                         }
                     }
                     break;

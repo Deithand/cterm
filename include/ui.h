@@ -2,6 +2,7 @@
 #define UI_H
 
 #include <ncurses.h>
+#include <sys/time.h>
 #include "imap.h"
 #include "smtp.h"
 #include "config.h"
@@ -22,6 +23,9 @@ typedef struct {
     SmtpSession *smtp_session;
     Config *config;
     int running;
+    /* Double-tap detection */
+    struct timeval last_tap_time;
+    int last_tapped_index;
 } UIContext;
 
 /* UI initialization and cleanup */
