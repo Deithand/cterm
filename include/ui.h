@@ -5,11 +5,15 @@
 #include "imap.h"
 #include "smtp.h"
 #include "config.h"
+#include "addressbook.h"
 
 typedef enum {
     VIEW_EMAIL_LIST,
     VIEW_EMAIL_CONTENT,
-    VIEW_COMPOSE
+    VIEW_COMPOSE,
+    VIEW_SEARCH,
+    VIEW_FOLDERS,
+    VIEW_ADDRESSBOOK
 } ViewMode;
 
 typedef struct {
@@ -21,7 +25,10 @@ typedef struct {
     ImapSession *imap_session;
     SmtpSession *smtp_session;
     Config *config;
+    AddressBook addressbook;
     int running;
+    char search_query[256];
+    int filter_active;
 } UIContext;
 
 /* UI initialization and cleanup */

@@ -312,6 +312,10 @@ int imap_connect(ImapSession *session, const char *host, int port, int use_ssl) 
     session->emails = NULL;
     session->email_count = 0;
     session->email_capacity = 0;
+    session->current_mailbox[0] = '\0';
+    session->mailboxes = NULL;
+    session->mailbox_count = 0;
+    session->mailbox_capacity = 0;
 
     if (net_connect(host, port, use_ssl, &session->conn) < 0) {
         return -1;
@@ -356,6 +360,7 @@ void imap_disconnect(ImapSession *session) {
 
     net_disconnect(&session->conn);
     imap_free_emails(session);
+    imap_free_mailboxes(session);
 }
 
 /* Select mailbox (e.g., INBOX) */
@@ -373,6 +378,10 @@ int imap_select_mailbox(ImapSession *session, const char *mailbox) {
         fprintf(stderr, "IMAP select mailbox failed\n");
         return -1;
     }
+
+    /* Save current mailbox name */
+    strncpy(session->current_mailbox, mailbox, MAX_MAILBOX_NAME - 1);
+    session->current_mailbox[MAX_MAILBOX_NAME - 1] = '\0';
 
     return 0;
 }
@@ -625,4 +634,252 @@ void imap_free_emails(ImapSession *session) {
     }
     session->email_count = 0;
     session->email_capacity = 0;
+}
+
+/* Free mailbox list */
+void imap_free_mailboxes(ImapSession *session) {
+    if (session->mailboxes) {
+        free(session->mailboxes);
+        session->mailboxes = NULL;
+    }
+    session->mailbox_count = 0;
+    session->mailbox_capacity = 0;
+}
+
+/* List all mailboxes */
+int imap_list_mailboxes(ImapSession *session) {
+    char command[256];
+    char response[BUFFER_SIZE * 4];
+    char *line, *saveptr;
+
+    /* Free previous mailboxes */
+    imap_free_mailboxes(session);
+
+    /* List mailboxes */
+    snprintf(command, sizeof(command), "A%d LIST \"\" \"*\"", session->tag_counter++);
+
+    if (imap_send_command(session, command, response, sizeof(response)) < 0) {
+        return -1;
+    }
+
+    /* Parse response */
+    session->mailbox_capacity = 10;
+    session->mailboxes = malloc(sizeof(Mailbox) * session->mailbox_capacity);
+    session->mailbox_count = 0;
+
+    line = strtok_r(response, "\n", &saveptr);
+    while (line != NULL) {
+        /* Look for LIST responses */
+        if (strstr(line, "* LIST")) {
+            if (session->mailbox_count >= session->mailbox_capacity) {
+                session->mailbox_capacity *= 2;
+                session->mailboxes = realloc(session->mailboxes, sizeof(Mailbox) * session->mailbox_capacity);
+            }
+
+            Mailbox *mailbox = &session->mailboxes[session->mailbox_count];
+            memset(mailbox, 0, sizeof(Mailbox));
+
+            /* Extract mailbox name - it's after the last quote */
+            char *name_start = strrchr(line, '"');
+            if (name_start && name_start > line) {
+                name_start--;
+                while (name_start > line && *name_start != '"') {
+                    name_start--;
+                }
+                if (*name_start == '"') {
+                    name_start++;
+                    char *name_end = strchr(name_start, '"');
+                    if (name_end) {
+                        int len = name_end - name_start;
+                        if (len >= MAX_MAILBOX_NAME) len = MAX_MAILBOX_NAME - 1;
+                        strncpy(mailbox->name, name_start, len);
+                        mailbox->name[len] = '\0';
+                        session->mailbox_count++;
+                    }
+                }
+            }
+        }
+        line = strtok_r(NULL, "\n", &saveptr);
+    }
+
+    return session->mailbox_count;
+}
+
+/* Create new mailbox */
+int imap_create_mailbox(ImapSession *session, const char *mailbox) {
+    char command[256];
+    char response[BUFFER_SIZE];
+
+    snprintf(command, sizeof(command), "A%d CREATE %s", session->tag_counter++, mailbox);
+
+    if (imap_send_command(session, command, response, sizeof(response)) < 0) {
+        return -1;
+    }
+
+    return (strstr(response, "OK") != NULL) ? 0 : -1;
+}
+
+/* Delete mailbox */
+int imap_delete_mailbox(ImapSession *session, const char *mailbox) {
+    char command[256];
+    char response[BUFFER_SIZE];
+
+    snprintf(command, sizeof(command), "A%d DELETE %s", session->tag_counter++, mailbox);
+
+    if (imap_send_command(session, command, response, sizeof(response)) < 0) {
+        return -1;
+    }
+
+    return (strstr(response, "OK") != NULL) ? 0 : -1;
+}
+
+/* Search emails by criteria */
+int imap_search_emails(ImapSession *session, const char *criteria) {
+    char command[512];
+    char response[BUFFER_SIZE * 2];
+
+    snprintf(command, sizeof(command), "A%d SEARCH %s", session->tag_counter++, criteria);
+
+    if (imap_send_command(session, command, response, sizeof(response)) < 0) {
+        return -1;
+    }
+
+    /* Parse UIDs from response */
+    char *search_line = strstr(response, "* SEARCH");
+    if (!search_line) {
+        return 0; /* No results */
+    }
+
+    /* Count results */
+    int count = 0;
+    char *p = search_line + 8; /* Skip "* SEARCH" */
+    while (*p) {
+        while (*p == ' ') p++;
+        if (isdigit(*p)) {
+            count++;
+            while (isdigit(*p)) p++;
+        } else {
+            break;
+        }
+    }
+
+    return count;
+}
+
+/* Filter emails by subject */
+int imap_filter_by_subject(ImapSession *session, const char *subject) {
+    char criteria[512];
+    snprintf(criteria, sizeof(criteria), "SUBJECT \"%s\"", subject);
+    return imap_search_emails(session, criteria);
+}
+
+/* Filter emails by sender */
+int imap_filter_by_sender(ImapSession *session, const char *sender) {
+    char criteria[512];
+    snprintf(criteria, sizeof(criteria), "FROM \"%s\"", sender);
+    return imap_search_emails(session, criteria);
+}
+
+/* Filter unseen emails */
+int imap_filter_unseen(ImapSession *session) {
+    return imap_search_emails(session, "UNSEEN");
+}
+
+/* Get attachments information */
+int imap_get_attachments(ImapSession *session, unsigned int uid, Email *email) {
+    char command[256];
+    char response[BUFFER_SIZE * 2];
+
+    snprintf(command, sizeof(command),
+             "A%d UID FETCH %u BODYSTRUCTURE",
+             session->tag_counter++, uid);
+
+    if (imap_send_command(session, command, response, sizeof(response)) < 0) {
+        return -1;
+    }
+
+    /* Simple parsing - look for attachment indicators */
+    email->attachment_count = 0;
+    email->has_attachments = 0;
+
+    char *p = response;
+    int part_num = 1;
+
+    while ((p = strstr(p, "\"attachment\"")) != NULL && email->attachment_count < MAX_ATTACHMENTS) {
+        /* Found an attachment */
+        Attachment *att = &email->attachments[email->attachment_count];
+        att->part_number = part_num++;
+
+        /* Try to find filename */
+        char *filename_start = strstr(p, "\"filename\"");
+        if (filename_start) {
+            filename_start = strchr(filename_start + 10, '"');
+            if (filename_start) {
+                filename_start++;
+                char *filename_end = strchr(filename_start, '"');
+                if (filename_end) {
+                    int len = filename_end - filename_start;
+                    if (len >= MAX_FILENAME_LEN) len = MAX_FILENAME_LEN - 1;
+                    strncpy(att->filename, filename_start, len);
+                    att->filename[len] = '\0';
+                }
+            }
+        }
+
+        if (att->filename[0] == '\0') {
+            snprintf(att->filename, MAX_FILENAME_LEN, "attachment_%d", part_num);
+        }
+
+        strcpy(att->mime_type, "application/octet-stream");
+        strcpy(att->encoding, "base64");
+        att->size = 0;
+
+        email->attachment_count++;
+        p++;
+    }
+
+    if (email->attachment_count > 0) {
+        email->has_attachments = 1;
+    }
+
+    return email->attachment_count;
+}
+
+/* Fetch attachment content and save to file */
+int imap_fetch_attachment(ImapSession *session, unsigned int uid, int part_num, const char *filename) {
+    char command[256];
+    char response[BUFFER_SIZE * 2];
+
+    snprintf(command, sizeof(command),
+             "A%d UID FETCH %u BODY[%d]",
+             session->tag_counter++, uid, part_num);
+
+    if (imap_send_command(session, command, response, sizeof(response)) < 0) {
+        return -1;
+    }
+
+    /* Find body start */
+    char *body_start = strstr(response, "\r\n\r\n");
+    if (!body_start) {
+        body_start = strstr(response, "\n\n");
+    }
+
+    if (body_start) {
+        body_start += 4;
+
+        /* Decode base64 and save to file */
+        char decoded[BUFFER_SIZE];
+        int decoded_len = base64_decode(body_start, strlen(body_start), decoded, sizeof(decoded));
+
+        if (decoded_len > 0) {
+            FILE *f = fopen(filename, "wb");
+            if (f) {
+                fwrite(decoded, 1, decoded_len, f);
+                fclose(f);
+                return 0;
+            }
+        }
+    }
+
+    return -1;
 }

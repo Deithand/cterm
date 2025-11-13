@@ -14,6 +14,19 @@ int ui_init(UIContext *ctx, ImapSession *imap, SmtpSession *smtp, Config *cfg) {
     ctx->selected_index = 0;
     ctx->scroll_offset = 0;
     ctx->running = 1;
+    ctx->search_query[0] = '\0';
+    ctx->filter_active = 0;
+
+    /* Initialize address book */
+    char addressbook_file[512];
+    const char *home = getenv("HOME");
+    if (home) {
+        snprintf(addressbook_file, sizeof(addressbook_file), "%s/.cterm_addressbook", home);
+    } else {
+        strcpy(addressbook_file, ".cterm_addressbook");
+    }
+    addressbook_init(&ctx->addressbook, addressbook_file);
+    addressbook_load(&ctx->addressbook);
 
     /* Initialize ncurses */
     initscr();
@@ -63,6 +76,11 @@ void ui_cleanup(UIContext *ctx) {
     if (ctx->status_win) {
         delwin(ctx->status_win);
     }
+
+    /* Save and free address book */
+    addressbook_save(&ctx->addressbook);
+    addressbook_free(&ctx->addressbook);
+
     endwin();
 }
 
@@ -82,15 +100,27 @@ void ui_draw_status(UIContext *ctx, const char *message) {
     switch (ctx->current_view) {
         case VIEW_EMAIL_LIST:
             view_name = "📧 Email List";
-            controls = "[Enter]Open [C]Compose [D]Delete [R]Refresh [Q]Quit";
+            controls = "[Enter]Open [C]Compose [D]Delete [R]Refresh [S]Search [F]Folders [A]Addressbook [Q]Quit";
             break;
         case VIEW_EMAIL_CONTENT:
             view_name = "📖 Email Content";
-            controls = "[Esc]Back [D]Delete [M]Mark Unseen";
+            controls = "[Esc]Back [D]Delete [M]Mark Unseen [A]Save Attachment";
             break;
         case VIEW_COMPOSE:
             view_name = "✉️  Compose Email";
             controls = "[F2]Send [Esc]Cancel";
+            break;
+        case VIEW_SEARCH:
+            view_name = "🔍 Search";
+            controls = "[Esc]Cancel";
+            break;
+        case VIEW_FOLDERS:
+            view_name = "📁 Folders";
+            controls = "[Enter]Select [Esc]Cancel";
+            break;
+        case VIEW_ADDRESSBOOK:
+            view_name = "📇 Address Book";
+            controls = "[Esc]Cancel";
             break;
     }
 
@@ -458,6 +488,24 @@ void ui_handle_input(UIContext *ctx, int ch) {
                     ui_draw_status(ctx, "Refreshed");
                     break;
 
+                case 's':
+                case 'S':
+                    /* Search */
+                    ctx->current_view = VIEW_SEARCH;
+                    break;
+
+                case 'f':
+                case 'F':
+                    /* Show folders */
+                    ctx->current_view = VIEW_FOLDERS;
+                    break;
+
+                case 'a':
+                case 'A':
+                    /* Show address book */
+                    ctx->current_view = VIEW_ADDRESSBOOK;
+                    break;
+
                 case 'q':
                 case 'Q':
                     ctx->running = 0;
@@ -495,14 +543,52 @@ void ui_handle_input(UIContext *ctx, int ch) {
                         ui_draw_status(ctx, "Marked as unseen");
                     }
                     break;
+
+                case 'a':
+                case 'A':
+                    /* Save attachments */
+                    if (ctx->selected_index >= 0 && ctx->selected_index < ctx->imap_session->email_count) {
+                        Email *email = &ctx->imap_session->emails[ctx->selected_index];
+                        if (email->has_attachments) {
+                            for (int i = 0; i < email->attachment_count; i++) {
+                                char filename[512];
+                                snprintf(filename, sizeof(filename), "/tmp/%s", email->attachments[i].filename);
+                                if (imap_fetch_attachment(ctx->imap_session, email->uid,
+                                                         email->attachments[i].part_number, filename) == 0) {
+                                    char msg[256];
+                                    snprintf(msg, sizeof(msg), "Saved: %s", filename);
+                                    ui_draw_status(ctx, msg);
+                                } else {
+                                    ui_draw_status(ctx, "Failed to save attachment");
+                                }
+                            }
+                        } else {
+                            ui_draw_status(ctx, "No attachments");
+                        }
+                    }
+                    break;
             }
             break;
 
         case VIEW_COMPOSE:
             /* Handled in ui_draw_compose */
             break;
+
+        case VIEW_SEARCH:
+        case VIEW_FOLDERS:
+        case VIEW_ADDRESSBOOK:
+            /* Handled in their respective draw functions */
+            if (ch == 27) { /* ESC */
+                ctx->current_view = VIEW_EMAIL_LIST;
+            }
+            break;
     }
 }
+
+/* Forward declarations for new view functions */
+void ui_draw_search(UIContext *ctx);
+void ui_draw_folders(UIContext *ctx);
+void ui_draw_addressbook(UIContext *ctx);
 
 /* Main UI loop */
 void ui_run(UIContext *ctx) {
@@ -524,6 +610,15 @@ void ui_run(UIContext *ctx) {
             case VIEW_COMPOSE:
                 ui_draw_compose(ctx);
                 continue; /* Compose handles its own input */
+            case VIEW_SEARCH:
+                ui_draw_search(ctx);
+                break;
+            case VIEW_FOLDERS:
+                ui_draw_folders(ctx);
+                break;
+            case VIEW_ADDRESSBOOK:
+                ui_draw_addressbook(ctx);
+                break;
         }
 
         ui_draw_status(ctx, "");
@@ -532,4 +627,126 @@ void ui_run(UIContext *ctx) {
         ch = wgetch(ctx->main_win);
         ui_handle_input(ctx, ch);
     }
+}
+
+/* Draw search view */
+void ui_draw_search(UIContext *ctx) {
+    werase(ctx->main_win);
+
+    wattron(ctx->main_win, COLOR_PAIR(5));
+    box(ctx->main_win, 0, 0);
+    wattroff(ctx->main_win, COLOR_PAIR(5));
+
+    wattron(ctx->main_win, COLOR_PAIR(1) | A_BOLD);
+    mvwprintw(ctx->main_win, 1, 2, "🔍 Search Emails");
+    wattroff(ctx->main_win, COLOR_PAIR(1) | A_BOLD);
+
+    mvwprintw(ctx->main_win, 3, 2, "Search query: ");
+    wrefresh(ctx->main_win);
+
+    /* Get search input */
+    echo();
+    curs_set(1);
+
+    char search[256] = "";
+    wgetnstr(ctx->main_win, search, sizeof(search) - 1);
+
+    noecho();
+    curs_set(0);
+
+    if (strlen(search) > 0) {
+        ui_draw_status(ctx, "Searching...");
+        int count = imap_search_emails(ctx->imap_session, search);
+
+        char msg[256];
+        snprintf(msg, sizeof(msg), "Found %d emails matching '%s'", count, search);
+        ui_draw_status(ctx, msg);
+
+        wgetch(ctx->main_win); /* Wait for key */
+    }
+
+    ctx->current_view = VIEW_EMAIL_LIST;
+}
+
+/* Draw folders view */
+void ui_draw_folders(UIContext *ctx) {
+    werase(ctx->main_win);
+
+    wattron(ctx->main_win, COLOR_PAIR(5));
+    box(ctx->main_win, 0, 0);
+    wattroff(ctx->main_win, COLOR_PAIR(5));
+
+    wattron(ctx->main_win, COLOR_PAIR(1) | A_BOLD);
+    mvwprintw(ctx->main_win, 1, 2, "📁 Select Folder");
+    wattroff(ctx->main_win, COLOR_PAIR(1) | A_BOLD);
+
+    /* Get mailboxes */
+    ui_draw_status(ctx, "Loading folders...");
+    int count = imap_list_mailboxes(ctx->imap_session);
+
+    int y = 3;
+    for (int i = 0; i < count && y < getmaxy(ctx->main_win) - 2; i++) {
+        mvwprintw(ctx->main_win, y++, 4, "[%d] %s", i + 1, ctx->imap_session->mailboxes[i].name);
+    }
+
+    mvwprintw(ctx->main_win, y + 1, 2, "Enter folder number (0 to cancel): ");
+    wrefresh(ctx->main_win);
+
+    /* Get input */
+    echo();
+    curs_set(1);
+
+    char input[32];
+    wgetnstr(ctx->main_win, input, sizeof(input) - 1);
+
+    noecho();
+    curs_set(0);
+
+    int choice = atoi(input);
+    if (choice > 0 && choice <= count) {
+        const char *folder = ctx->imap_session->mailboxes[choice - 1].name;
+        ui_draw_status(ctx, "Selecting folder...");
+
+        if (imap_select_mailbox(ctx->imap_session, folder) == 0) {
+            imap_fetch_emails(ctx->imap_session);
+            char msg[256];
+            snprintf(msg, sizeof(msg), "Switched to %s", folder);
+            ui_draw_status(ctx, msg);
+        } else {
+            ui_draw_status(ctx, "Failed to select folder");
+        }
+    }
+
+    ctx->current_view = VIEW_EMAIL_LIST;
+}
+
+/* Draw address book view */
+void ui_draw_addressbook(UIContext *ctx) {
+    werase(ctx->main_win);
+
+    wattron(ctx->main_win, COLOR_PAIR(5));
+    box(ctx->main_win, 0, 0);
+    wattroff(ctx->main_win, COLOR_PAIR(5));
+
+    wattron(ctx->main_win, COLOR_PAIR(1) | A_BOLD);
+    mvwprintw(ctx->main_win, 1, 2, "📇 Address Book (%d contacts)", ctx->addressbook.contact_count);
+    wattroff(ctx->main_win, COLOR_PAIR(1) | A_BOLD);
+
+    int max_y = getmaxy(ctx->main_win);
+    int y = 3;
+
+    for (int i = 0; i < ctx->addressbook.contact_count && y < max_y - 2; i++) {
+        Contact *contact = &ctx->addressbook.contacts[i];
+        mvwprintw(ctx->main_win, y++, 4, "%-30s <%s>", contact->name, contact->email);
+    }
+
+    if (ctx->addressbook.contact_count == 0) {
+        mvwprintw(ctx->main_win, 3, 4, "No contacts yet");
+    }
+
+    mvwprintw(ctx->main_win, max_y - 2, 2, "Press any key to return...");
+    wrefresh(ctx->main_win);
+
+    wgetch(ctx->main_win);
+    ctx->current_view = VIEW_EMAIL_LIST;
 }
